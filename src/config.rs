@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use rdev::Key;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -42,7 +43,7 @@ pub enum XboxButton {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Profile {
     pub name: String,
-    pub mappings: HashMap<evdev::Key, XboxButton>,
+    pub mappings: HashMap<Key, XboxButton>,
 }
 
 pub fn load_profiles() -> Result<Vec<Profile>> {

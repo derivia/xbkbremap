@@ -1,14 +1,11 @@
 mod config;
 mod controller;
-mod input;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use evdev::{EventType, Key};
-use std::io::{self, Write};
-use std::thread;
-use std::time::Duration;
-use termios::{tcsetattr, Termios, ECHO, ICANON, TCSANOW};
+use rdev::{listen, EventType, Key};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::config::load_profiles;
 use crate::controller::VirtualController;
@@ -17,21 +14,6 @@ use crate::controller::VirtualController;
 #[command(author, version, about, long_about = None)]
 struct Args {
     profile_name: String,
-}
-
-fn set_raw_mode() -> io::Result<Termios> {
-    let fd = 0;
-    let mut termios = Termios::from_fd(fd)?;
-    let orig = termios.clone();
-    termios.c_lflag &= !(ICANON | ECHO);
-    tcsetattr(fd, TCSANOW, &termios)?;
-    Ok(orig)
-}
-
-fn restore_mode(orig: &Termios) -> io::Result<()> {
-    let fd = 0;
-    tcsetattr(fd, TCSANOW, orig)?;
-    Ok(())
 }
 
 #[tokio::main]
@@ -47,11 +29,9 @@ async fn main() -> Result<()> {
 
     println!("Profile '{}' loaded.", profile.name);
 
-    let mut keyboard = input::choose_keyboard().context("Failed to select keyboard")?;
-
-    input::grab_device(&mut keyboard).context("Failed to capture keyboard")?;
-
-    let mut controller = VirtualController::new().context("Failed to create virtual controller")?;
+    let controller = Arc::new(Mutex::new(
+        VirtualController::new().context("Failed to create virtual controller")?,
+    ));
 
     println!("\n--- Active Mapping ---");
     for (key, button) in &profile.mappings {
@@ -60,56 +40,44 @@ async fn main() -> Result<()> {
     println!("------------------------\n");
     println!("Ready! Remapper is active. Press F12 to stop.");
 
-    let orig_termios = set_raw_mode().context("Failed to set terminal to raw mode")?;
+    let (tx, mut rx) = mpsc::channel(1);
 
-    let task = tokio::task::spawn_blocking(move || -> Result<()> {
-        // FIXME: After F12 is pressed, the program should exit gracefully without needing to press Ctrl + C.
-        loop {
-            let mut had_event = false;
-            match keyboard.fetch_events() {
-                Ok(events) => {
-                    for event in events {
-                        if event.event_type() != EventType::KEY {
-                            continue;
-                        }
+    let mappings = Arc::new(profile.mappings);
+    let controller_clone = Arc::clone(&controller);
 
-                        let key = Key(event.code());
-                        let value = event.value();
+    let listen_task = tokio::task::spawn_blocking(move || {
+        let callback = move |event: rdev::Event| {
+            let key = match event.event_type {
+                EventType::KeyPress(key) => (key, 1),
+                EventType::KeyRelease(key) => (key, 0),
+                _ => return,
+            };
 
-                        if key == Key::KEY_F12 && value == 1 {
-                            print!("F12 key pressed. Exiting...\r");
-                            io::stdout().flush().ok();
-                            return Ok(());
-                        }
-
-                        if let Some(xbox_button) = profile.mappings.get(&key) {
-                            if value == 0 || value == 1 {
-                                if let Err(e) = controller.handle_button_action(*xbox_button, value)
-                                {
-                                    eprintln!("Error sending controller event: {}", e);
-                                }
-                            }
-                        }
-                        had_event = true;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => {
-                    eprintln!("Error reading keyboard events: {}", e);
-                    return Err(e.into());
-                }
+            if key.0 == Key::F12 && key.1 == 1 {
+                let _ = tx.blocking_send(());
+                return;
             }
 
-            if !had_event {
-                thread::sleep(Duration::from_millis(1));
+            if let Some(xbox_button) = mappings.get(&key.0) {
+                let mut controller = controller_clone.lock().unwrap();
+                if let Err(e) = controller.handle_button_action(*xbox_button, key.1) {
+                    eprintln!("Error sending controller event: {}", e);
+                }
             }
+        };
+
+        if let Err(error) = listen(callback) {
+            eprintln!("Error listening for keyboard events: {:?}", error);
         }
     });
 
-    task.await??;
+    tokio::select! {
+        _ = listen_task => {},
+        _ = rx.recv() => {
+            println!("F12 key pressed. Exiting...");
+        }
+    }
 
-    restore_mode(&orig_termios).context("Failed to restore terminal mode")?;
-
-    println!("Program terminated. Devices released.");
+    println!("Program terminated.");
     Ok(())
 }

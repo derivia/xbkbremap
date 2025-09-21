@@ -8,8 +8,8 @@ virtual controller.
 1. Add necessary udev rules file.
 ```
 # /etc/udev/rules.d/99-xbkbremap.rules
-KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
-KERNEL=="event*", NAME="input/%k", MODE="0660", GROUP="input"
+
+KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static\_node=uinput"
 ```
 2. Add yourself to the `input` group.
 ```
@@ -25,18 +25,11 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 1. Compile the project with `cargo build --release`.
 2. Copy config.example.json to `~/.config/xbkbremap/config.json` to use it as base configuration file.
 3. Edit the copied configuration file to your liking.
-4. Run with superuser permissions: `./target/release/xbkbremap "profile name"`
+4. Run: `./target/release/xbkbremap "profile name"`
 
 ## Important notes:
 
-**Press F12 to stop intercepting keyboard.**
-
-You cannot use your keyboard while the program is running.
-Which means you should have a setup where you can enter the game you want without using the keyboard.
-
-## Ideas
-
-- [ ] Implement some sort of virtual keyboard that intercepts only the configured keys, instead of capturing the entire keyboard.
+Press F12 to stop the program.
 
 ## LICENSE
 
